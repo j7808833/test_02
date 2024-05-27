@@ -7,3 +7,5 @@ matplotlib
 prophet
 python-dateutil
 requests
+Image
+BytesIO
