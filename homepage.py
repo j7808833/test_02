@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 import backtrader as bt
 import datetime
+import plotly
 import matplotlib.pyplot as plt
 from prophet import Prophet
 from dateutil.relativedelta import relativedelta
@@ -15,16 +16,18 @@ import random
 import base64
 import numpy as np
 from matplotlib.animation import FuncAnimation
+from streamlit_tags import st_tags
 
 # 設置 Matplotlib 背景顏色
 plt.rcParams['axes.facecolor'] = 'black'  # 設置圖表區域背景顏色為黑色
 plt.rcParams['figure.facecolor'] = 'black'  # 設置整個圖表背景顏色為黑色
-plt.rcParams['text.color'] = 'white'  # 設置圖表文字顏色為白色
+plt.rcParams['text.color'] = 'gray'  # 設置圖表文字顏色為白色
 fig, ax = plt.subplots()
 
 # 調整標註的底色為黑色
-legend = ax.legend()
-if legend:
+# 這行代碼應該在圖例存在的情況下執行
+if ax.get_legend() is not None:
+    legend = ax.legend()
     legend.get_frame().set_facecolor('black')
 
 # Prophet 預測函數
@@ -67,8 +70,10 @@ class PeriodicInvestmentStrategy(bt.Strategy):
         price = self.data.close[0]
         # 計算購買數量
         investment_amount = self.params.monthly_investment / price
-        # 執行購買
-        self.order = self.buy(size=investment_amount)
+        # 檢查資金是否足夠
+        if self.broker.get_cash() >= self.params.monthly_investment:
+            # 執行購買
+            self.order = self.buy(size=investment_amount)
 
     def log(self, txt, dt=None):
         ''' 日誌函數 '''
@@ -95,7 +100,7 @@ class PeriodicInvestmentStrategy(bt.Strategy):
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.log('訂單 取消/保證金不足/拒絕')
 
-        self.order = None  # 重置 order 屬性
+        self.order = None
 
 # 以50%的機率選擇圖片連結
 if random.random() < 0.5:
@@ -107,11 +112,10 @@ else:
 st.markdown(f'<img src="{image_url}" style="width: 100%;">', unsafe_allow_html=True)
 
 # Streamlit 頁面佈局
-st.title('Backtest & Backtrader Bar')
+st.title('Prophet & Backtrader  Bar')
 
 # 提示用戶輸入股票代碼，並使用逗號分隔
 user_input = st.text_area("請輸入股票代碼，用逗號分隔，台股請記得在最後加上.TW", "AAPL, MSFT, GOOG, AMZN, 0050.TW")
-
 # 將用戶輸入的股票代碼轉換為列表
 stocks = [stock.strip() for stock in user_input.split(",")]
 st.write("您輸入的股票代碼：", stocks)
@@ -140,16 +144,17 @@ if st.button('運行預測'):
         ax.yaxis.label.set_color('white')  # 調整y軸標籤顏色為白色
         ax.xaxis.label.set_color('white')  # 調整x軸標籤顏色為白色
 
-    # 調整數值和框線顏色
+        # 調整數值和框線顏色
     for text in fig1.findobj(match=matplotlib.text.Text):
         text.set_color('white')
 
+    # 修改折線和點的顏色
     for dot in fig1.findobj(match=matplotlib.patches.Circle):
         dot.set_edgecolor('white')  # 點的邊緣顏色
         dot.set_facecolor('white')  # 點的填充顏色
 
     st.pyplot(fig1)
-    st.toast('Your stock has been generated!', icon='🥂')
+    st.success('您的股票預測已生成！')
 
 # 添加滑塊來控制參數
 initial_cash = st.slider('預算', min_value=0, max_value=10000000, step=10000, value=10000)
@@ -158,18 +163,53 @@ commission = st.slider('手續費 (%)', min_value=0.0, max_value=1.0, step=0.000
 investment_day = st.slider('每月投資日', min_value=1, max_value=28, step=1, value=1)
 n_years_backtest = st.slider('回測持續時間 (年)', min_value=1, max_value=10, step=1, value=5)
 
+if initial_cash == 0:
+    print("預算不可以為0")
+    
 # 定義顯示結果的函數
 def display_results(cash, value, initial_value, n_years):
     # 計算年回報率
     annual_return = ((value - cash) / (initial_cash - cash)) ** (1 / n_years) - 1
     annual_return *= 100  # 轉換為百分比形式
-    
-    st.toast('Your stock has been generated!', icon='🥂')
+    total_return = ((value - cash) / (initial_cash - cash)) - 1
+    total_return *= 100  # 轉換為百分比形式
+
+    # 計算預算變化
+    budget_delta = initial_value - initial_cash
+
+    # 設置獨立變數來顯示 delta 值
+    budget_delta_display = f"${budget_delta:.2f}"
+    annual_return_display = f"{annual_return:.2f}%"
+    total_return_display = f"{total_return:.2f}%"
+
+    # 創建多列佈局
     col1, col2, col3 = st.columns(3)
-    col1.metric("預算", f"{cash:.2f}", f"{initial_cash:.2f}", delta_color="inverse")
-    col2.metric("最終價值", f"{value:.2f}", f"{initial_value:.2f}", delta_color="inverse")
-    col3.metric("年回報率", f"{annual_return:.2f}%", " ", delta_color="inverse")
+
+    # 在第一列中顯示預算
+    custom_metric(col1, "預算", f"${initial_cash:.2f}", budget_delta_display)
+
+    # 在第二列中顯示最終價值
+    custom_metric(col2, "最終價值", f"${value:.2f}", "")
+
+    # 在第三列中顯示年回報率
+    custom_metric(col3, "年回報率", annual_return_display, total_return_display)
+
     return annual_return
+
+# 自定義顏色顯示函數
+def custom_metric(column, label, value, delta):
+    # 去掉美元符號並轉換為浮點數
+    delta_value = float(delta.replace('$', '').replace('%', '')) if delta else 0
+    delta_color = "red" if delta_value > 0 else "green"
+    delta_sign = "+" if delta_value > 0 else ""
+    delta_display = f"{delta_sign}{delta}" if delta else ""
+    column.markdown(f"""
+    <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 10px;">
+        <span style="font-size: 1rem;">{label}</span>
+        <span style="font-size: 2rem; font-weight: bold;">{value}</span>
+        <span style="font-size: 1rem; color: {delta_color};">{delta_display}</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 def get_drink_name(investment_ratio, commission, annual_return):
     if investment_ratio > 0.1:
@@ -211,103 +251,135 @@ def get_drink_name(investment_ratio, commission, annual_return):
             else:
                 return "Vieux_Carré"
 
-# 定義調酒名稱和其對應的特性和依據
+# 调酒信息
 drinks_info = {
     "Vodka_Soda": {
         "報酬率": "低",
         "大小": "小額",
-        "特性": "伏特加和蘇打水，酒精度低，口感清淡清爽。",
-        "依據": "低風險，適合低回報的小額短期投資。"
+        "特性": "清新的氣味和輕盈的感覺象徵著保守和穩健的投資風格。適合謹慎型投資者，短期內尋求低風險回報。",
+        "成分": ["伏特加", "蘇打水"],
+        "酒精濃度": "10",
+        "口感": "甘口"
     },
     "Vodka_Martini": {
         "報酬率": "中",
         "大小": "小額",
-        "特性": "伏特加和乾苦艾酒，酒精度中等，口感適中，經典且稍微複雜。",
-        "依據": "適合中等風險和回報的小額短期投資。"
+        "特性": "辛辣且微苦的味道代表了適中的風險，投資者具有一定的冒險精神，追求平衡的短期回報。",
+        "成分": ["伏特加", "乾苦艾酒"],
+        "酒精濃度": "30",
+        "口感": "中口"
     },
     "Whiskey_Sour": {
         "報酬率": "高",
         "大小": "小額",
-        "特性": "威士忌、檸檬汁和糖漿，酒精度高，口感濃烈且有層次。",
-        "依據": "對應高風險和高回報的小額短期投資。"
+        "特性": "濃烈的味道和多層次的口感象徵著積極進取的投資策略，投資者願意承擔高風險以換取高回報。",
+        "成分": ["威士忌", "檸檬汁", "糖漿"],
+        "酒精濃度": "40",
+        "口感": "中口"
     },
     "Whiskey_Neat": {
         "報酬率": "極高",
         "大小": "小額",
-        "特性": "純飲威士忌，酒精度非常高，口感非常濃烈直接。",
-        "依據": "對應極高風險和極高回報的小額短期投資。"
+        "特性": "強烈且直截了當的風味比喻極端冒險的投資風格，適合非常自信且追求極高回報的投資者。",
+        "成分": ["純飲威士忌"],
+        "酒精濃度": "50",
+        "口感": "辛口"
     },
     "Moscow_Mule": {
         "報酬率": "低",
         "大小": "大額",
-        "特性": "伏特加、薑汁啤酒和青檸汁，酒精度低，口感溫和，帶有薑味的清爽感。",
-        "依據": "適合低風險且低回報的大額短期投資。"
+        "特性": "溫和且帶有薑味的口感象徵著謹慎且穩定的投資策略，適合大額低風險的投資。",
+        "成分": ["伏特加", "薑汁啤酒", "青檸汁"],
+        "酒精濃度": "10",
+        "口感": "甘口"
     },
     "Bloody_Mary": {
         "報酬率": "中",
         "大小": "大額",
-        "特性": "伏特加、番茄汁和各種調味料，酒精度中等，口感豐富且略帶鹹味。",
-        "依據": "適合中等風險和回報的大額短期投資。"
+        "特性": "豐富且多層次的味道代表著多元化的投資策略，適合大額中等風險的投資者。",
+        "成分": ["伏特加", "番茄汁", "各種調味料"],
+        "酒精濃度": "20",
+        "口感": "中口"
     },
     "Old_Fashioned": {
         "報酬率": "高",
         "大小": "大額",
-        "特性": "威士忌、苦味酒和糖，酒精度高，口感濃烈且複雜。",
-        "依據": "適合高風險和高回報的大額短期投資。"
+        "特性": "經典且濃烈的口感象徵著強勢且積極的投資策略，適合大額高風險的投資。",
+        "成分": ["威士忌", "苦味酒", "糖"],
+        "酒精濃度": "40",
+        "口感": "辛口"
     },
     "Manhattan": {
         "報酬率": "極高",
         "大小": "大額",
-        "特性": "威士忌、甜苦艾酒和苦味酒，酒精度非常高，口感非常濃烈複雜且富有層次。",
-        "依據": "適合極高風險和極高回報的大額短期投資。"
+        "特性": "非常濃烈且複雜的味道象徵著精密且策略性強的投資風格，適合追求極高回報的大額投資者。",
+        "成分": ["威士忌", "甜苦艾酒", "苦味酒"],
+        "酒精濃度": "45",
+        "口感": "辛口"
     },
     "Screwdriver": {
         "報酬率": "低",
         "大小": "小額",
-        "特性": "伏特加和橙汁，酒精度低，口感清新簡單。",
-        "依據": "適合低風險低回報的小額長期投資。"
+        "特性": "清新的橙汁味道代表著穩健和簡單的投資策略，適合保守型投資者，追求長期穩定的回報。",
+        "成分": ["伏特加", "橙汁"],
+        "酒精濃度": "10",
+        "口感": "甘口"
     },
     "Vodka_Collins": {
         "報酬率": "中",
         "大小": "小額",
-        "特性": "伏特加、檸檬汁、糖漿和蘇打水，酒精度中等，口感清爽且略帶甜味。",
-        "依據": "適合中等風險和回報的小額長期投資。"
+        "特性": "清爽的口感和適中的甜味象徵著平衡且多元的投資策略，適合希望在長期內獲得穩定回報的投資者。",
+        "成分": ["伏特加", "檸檬汁", "糖漿", "蘇打水"],
+        "酒精濃度": "20",
+        "口感": "中口"
     },
     "Rob_Roy": {
         "報酬率": "高",
         "大小": "小額",
-        "特性": "威士忌、甜苦艾酒和苦味酒，酒精度高，口感濃烈且經典。",
-        "依據": "適合高風險和高回報的小額長期投資。"
+        "特性": "經典而濃烈的口感象徵著經驗豐富的投資者，具有高風險承受能力，追求長期的高回報。",
+        "成分": ["威士忌", "甜苦艾酒", "苦味酒"],
+        "酒精濃度": "40",
+        "口感": "辛口"
     },
     "Sazerac": {
         "報酬率": "極高",
         "大小": "小額",
-        "特性": "威士忌、苦艾酒和苦味酒，酒精度非常高，口感非常濃烈複雜。",
-        "依據": "適合極高風險和極高回報的小額長期投資。"
+        "特性": "複雜而濃烈的風味象徵著非常精細和策略性的投資風格，適合追求極高回報並願意承擔高風險的投資者。",
+        "成分": ["威士忌", "苦艾酒", "苦味酒"],
+        "酒精濃度": "45",
+        "口感": "辛口"
     },
     "Aperol_Spritz": {
         "報酬率": "低",
         "大小": "大額",
-        "特性": "Aperol、蘇打水和香檳，酒精度低，口感溫和且清爽。",
-        "依據": "適合低風險低回報的大額長期投資。"
+        "特性": "溫和且帶有薑味的口感象徵著謹慎且穩定的投資策略，適合大額低風險的投資。",
+        "成分": ["Aperol", "蘇打水", "香檳"],
+        "酒精濃度": "8",
+        "口感": "甘口"
     },
     "Cosmopolitan": {
         "報酬率": "中",
         "大小": "大額",
-        "特性": "伏特加、柑橘利口酒、蔓越莓汁和青檸汁，酒精度中等，口感適中且帶有水果味。",
-        "依據": "適合中等風險和回報的大額長期投資。"
+        "特性": "帶有水果味的口感代表著平衡且多元的投資策略，適合希望在長期內獲得穩定回報的投資者。",
+        "成分": ["伏特加", "柑橘利口酒", "蔓越莓汁", "青檸汁"],
+        "酒精濃度": "20",
+        "口感": "中口"
     },
     "Boulevardier": {
         "報酬率": "高",
         "大小": "大額",
-        "特性": "威士忌、甜苦艾酒和苦味酒，酒精度高，口感濃烈且複雜。",
-        "依據": "適合高風險和高回報的大額長期投資。"
+        "特性": "濃烈且複雜的口感象徵著強勢且積極的投資策略，適合大額高風險的投資。",
+        "成分": ["威士忌", "甜苦艾酒", "苦味酒"],
+        "酒精濃度": "40",
+        "口感": "辛口"
     },
     "Vieux_Carré": {
         "報酬率": "極高",
         "大小": "大額",
-        "特性": "威士忌、干邑、甜苦艾酒和苦味酒，酒精度非常高，口感非常濃烈複雜。",
-        "依據": "適合極高風險和極高回報的大額長期投資。"
+        "特性": "非常濃烈且複雜的味道象徵著精密且策略性強的投資風格，適合追求極高回報的大額投資者。",
+        "成分": ["威士忌", "干邑", "甜苦艾酒", "苦味酒"],
+        "酒精濃度": "50",
+        "口感": "辛口"
     }
 }
 
@@ -341,14 +413,12 @@ if st.button('Run Backtest'):
     value = cerebro.broker.get_value()
 
     # 顯示結果
-    display_results(cash, value, initial_value, n_years_backtest)
+    annual_return = display_results(cash, value, initial_value, n_years_backtest)
 
     # 繪製結果
     fig = cerebro.plot(style='plotly')[0][0]  # 獲取 Matplotlib 圖形對象
     st.pyplot(fig)  # 將圖形嵌入到 Streamlit 頁面中
-    for marker in fig.findobj(match=matplotlib.lines.Line2D):
-        marker.set_markerfacecolor('black')  # 修改標記顏色
-    
+
     # 計算投資比例
     investment_ratio = monthly_investment / initial_cash if initial_cash != 0 else float('inf')
 
@@ -379,7 +449,7 @@ if st.button('Run Backtest'):
         "Vieux_Carré": "https://raw.githubusercontent.com/j7808833/test_02/main/pic/cocktail_16_Vieux%20Carr%C3%A9.jpg"
     }
 
-    st.write(f"您的投資風格對應的調酒是: {drink_name}")
+    #st.write(f"您的投資風格對應的調酒是: {drink_name}")
 
     # 顯示調酒圖片
     image_url = drink_images[drink_name]
@@ -387,7 +457,43 @@ if st.button('Run Backtest'):
     drink_image = Image.open(BytesIO(response.content))
     st.markdown(f'<p align="center"><img src="{image_url}" alt="{drink_name}" width="240"></p>', unsafe_allow_html=True)
 
-    labels=['Siege', 'Initiation', 'Crowd_control', 'Wave_clear', 'Objective_damage']
+    # 顯示特性和成分
+    if drink_name in drinks_info:
+        st.text_input("調酒名稱：", drink_name)
+        st.write("特性：", drinks_info[drink_name]["特性"])
+
+        st.text_input("成分：", value=", ".join(drinks_info[drink_name]["成分"]))
+        st.text_input("口感：", value=drinks_info[drink_name]["口感"])
+
+        # 获取酒精浓度的整数值
+        alcohol_content_value = drinks_info[drink_name]["酒精濃度"]
+
+        # 创建包含酒精浓度的 DataFrame
+        data_df = pd.DataFrame(
+            {
+                "酒精濃度": [alcohol_content_value],
+            }
+        )
+
+        # 显示带有进度条的 DataFrame
+        st.data_editor(
+            data_df,
+            column_config={
+                "酒精濃度": st.column_config.ProgressColumn(
+                    "酒精濃度",
+                    help="酒精濃度",
+                    format="%d",
+                    min_value=0,
+                    max_value=40,
+                ),
+            },
+            hide_index=True,
+            width=800  # 设置宽度为800像素
+        )
+    else:
+        st.write("找不到對應的調酒信息。")
+
+        labels=['Siege', 'Initiation', 'Crowd_control', 'Wave_clear', 'Objective_damage']
     markers = [0, 1, 2, 3, 4, 5]
     str_markers = ["0", "1", "2", "3", "4", "5"]
 
@@ -437,72 +543,7 @@ if st.button('Run Backtest'):
         plt.title(name, size=10, color='white', y=1.1)  # 修改標題顏色和字體大小
         st.pyplot(fig)
 
-    # 假設回測後的結果為某些參數
-    investment_ratio = 0.05
-    commission = 0.01
-    annual_return = 12  # 百分比
-
-    # 根據參數查找對應的雞尾酒名稱
-    def get_drink_name(investment_ratio, commission, annual_return):
-        if annual_return < 5:
-            if investment_ratio < 0.1:
-                return "Vodka_Soda"
-            else:
-                return "Moscow_Mule"
-        elif 5 <= annual_return < 10:
-            if investment_ratio < 0.1:
-                return "Vodka_Martini"
-            else:
-                return "Bloody_Mary"
-        elif 10 <= annual_return < 15:
-            if investment_ratio < 0.1:
-                return "Whiskey_Sour"
-            else:
-                return "Old_Fashioned"
-        else:
-            if investment_ratio < 0.1:
-                return "Whiskey_Neat"
-            else:
-                return "Manhattan"
-
-    drink_name = get_drink_name(investment_ratio, commission, annual_return)
-
-    # 顯示對應的特性和依據
-    if drink_name in radar_data:
-        st.write("特性：", drink_name)  # 此處暫時以飲料名稱代替
-        st.write("依據：", "根據參數查找")  # 暫時以文字代替
-    else:
-        st.write("找不到對應的調酒信息。")
-
+    
     # 顯示對應的雷達圖
     stats = radar_data[drink_name]
     make_radar_chart(drink_name, stats, attribute_labels_extended)
-
-    # 創建畫布和坐標軸
-    fig, ax = plt.subplots()
-
-    # 定義數據
-    x_data = list(range(10))
-    y_data = [x**2 for x in x_data]
-
-    # 繪製空的散點圖
-    s = ax.scatter([], [])
-
-    # 定義更新函數
-    def update(frame):
-        ax.clear()
-        
-        # 繪製當前幀的數據
-        ax.scatter(x_data[:frame+1], y_data[:frame+1], c='cyan', marker='o', label='Data')
-        
-        # 自定義圖表（標籤、標題等）
-        ax.set_xlabel('X 軸標籤')
-        ax.set_ylabel('Y 軸標籤')
-        ax.set_title('散點圖動畫')
-        ax.legend(loc='upper left')
-
-    # 創建動畫
-    ani = FuncAnimation(fig, update, frames=len(x_data), interval=200)
-
-    # 使用 streamlit 將動畫嵌入到網頁中
-    st.pyplot(fig)
